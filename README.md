@@ -38,6 +38,10 @@ In both cases this solution will auto create (via SageMaker Pipelines) a new 'Ch
 
 The solution also helps automate the uploading of GroundTruth Labeling Instructions and Images to a Public S3 bucket through a CodePipeline (CodeBuild Step). This allows you to work in source control and push GIT changes to improve your solution
 
+-- Reference Architecture --
+
+![GroundTruth Streaming Labeling Reference Architecture](https://devsecops-cicd-public-assets.s3.ap-southeast-2.amazonaws.com/examples/groundtruth_streaming_labeling_ref_architecture.jpg)
+
 ## 3. Installation
 
 There are two key steps to setting up this solution for each project:
