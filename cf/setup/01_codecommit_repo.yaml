@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Setup Stack (1) Create CodeCommit Repo in account
+
+Parameters:
+  #Application Generic Parameters
+  ProjectFriendlyName:
+    Type: String
+    Description: Enter an friendly project name for Tagging
+
+  ProjectResourcePrefix:
+    Type: String
+    Description: Enter a unique prefix for the project resources.
+
+Resources:
+  ProjectCodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties: 
+      RepositoryDescription: !Ref ProjectFriendlyName
+      RepositoryName: !Sub "${ProjectResourcePrefix}-repo"
+      Tags:
+        - Key: Name
+          Value: CodeCommit Repo
+        - Key: Project
+          Value:
+            Ref: ProjectFriendlyName
+        - Key: Purpose
+          Value: Code Repository
+    
+  #Create Group for CodeCommit Users to interact with the Repo
+  CodeCommitGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "CodeCommitUsers-${ProjectResourcePrefix}"
+      Path: /
+
+  CodeCommitGroupPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeCommitGroupPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: CodeCommitAllowedUsageDataAction
+            Effect: Allow
+            Action:
+              - codecommit:BatchGet*
+              - codecommit:Create*
+              - codecommit:DeleteFile
+              - codecommit:Get*
+              - codecommit:List*
+              - codecommit:Describe*
+              - codecommit:Put*
+              - codecommit:Post*
+              - codecommit:Merge*
+              - codecommit:Test*
+              - codecommit:UpdateComment
+              - codecommit:GitPull
+              - codecommit:GitPush
+              - codecommit:UploadArchive
+              # Explicitly not allowing DeleteRepository, DeleteBranch, UpdateRepositoryName, UpdateDefaultBranch or ApprovalRuleTemplate changes
+            Resource:
+              - !GetAtt ProjectCodeCommitRepo.Arn
+          - Sid: CodeCommitListAccess
+            Effect: Allow
+            Action:
+              - codecommit:ListRepositories
+            Resource: "*"
+          - Sid: "IAMReadOnlyConsoleAccess"
+            Effect: Allow
+            Action:
+              - iam:ListAccessKeys
+              - iam:ListSSHPublicKeys
+              - iam:ListServiceSpecificCredentials
+            Resource: "arn:aws:iam::*:user/${aws:username}"
+          - Sid: "IAMUserSSHKeys"
+            Effect: Allow
+            Action:
+              - iam:DeleteSSHPublicKey
+              - iam:GetSSHPublicKey
+              - iam:ListSSHPublicKeys
+              - iam:UpdateSSHPublicKey
+              - iam:UploadSSHPublicKey
+            Resource: "arn:aws:iam::*:user/${aws:username}"
+          - Sid: "IAMSelfManageServiceSpecificCredentials"
+            Effect: Allow
+            Action:
+              - iam:CreateServiceSpecificCredential
+              - iam:UpdateServiceSpecificCredential
+              - iam:DeleteServiceSpecificCredential
+              - iam:ResetServiceSpecificCredential
+            Resource: "arn:aws:iam::*:user/${aws:username}"
+      Groups:
+        -
+          !Ref CodeCommitGroup
+
+Outputs:
+  ProjectCodeCommitRepoArn:
+    Description: Project CodeCommit Repo Arn
+    Value: !GetAtt  ProjectCodeCommitRepo.Arn
+    Export:
+      Name: !Sub "${ProjectResourcePrefix}-repo-arn"
+
+  ProjectCodeCommitRepoName:
+    Description: Project CodeCommit Repo Name
+    Value: !Sub "${ProjectResourcePrefix}-repo"
+    Export:
+      Name: !Sub ${ProjectResourcePrefix}-repo-name

@@ -1,0 +1,350 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: 'AWS::Serverless-2016-10-31'
+Description: >
+    GroundTruth Resources Stack. Stack that supports a 'Streaming Labeling Job'
+    see 'Send Data Objects using Amazon S3':
+    [https://docs.aws.amazon.com/sagemaker/latest/dg/sms-streaming-labeling-job.html#sms-streaming-how-it-works-s3]
+
+Parameters:
+  ProjectFriendlyName:
+    Type: String
+    Description: Enter an friendly project name for Tagging
+    
+  ProjectResourcePrefix:
+    Type: String
+    Description: Enter a unique prefix for the project resources.
+      
+Resources:
+
+  GroundTruthExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "${ProjectResourcePrefix}-sagemaker-execution-role"
+      Description: Execution role used by SageMaker Pipelines to perform GroundTruth Streaming Labeling Jobs 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Path: "/"
+      Policies:
+        - PolicyName: AutomatedDataLabeling
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectResourcePrefix}-sagemaker-execution-role"
+        - PolicyName: S3BucketAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Sid: S3BucketAccess
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: "*"
+              - Effect: Allow
+                Sid: ListBucket
+                Action:
+                  - s3:ListBucket
+                Resource: "*"
+        - PolicyName: CloudWatchLogging
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Sid: StreamingTopicSubscribe
+                Action:
+                  - cloudwatch:PutMetricData
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: StreamingQueue
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Sid: StreamingTopicSubscribe
+                Action:
+                  - sqs:CreateQueue
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:ReceiveMessage
+                  - sqs:SendMessage
+                  - sqs:SendMessageBatch
+                  - sqs:SetQueueAttributes
+                Resource: !Sub "arn:aws:sqs:*:*:*GroundTruth*"
+        - PolicyName: StreamingTopic
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Sid: StreamingTopicSubscribe
+                Action:
+                  - sns:Subscribe
+                Resource: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectResourcePrefix}-topic-streaming-labeling"
+                Condition:
+                  StringEquals:
+                    sns:Protocol: "sqs"
+                  StringLike:
+                    sns:Endpoint: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:*GroundTruth*"
+              - Effect: Allow
+                Sid: StreamingTopicPublishAndUnsubscribe
+                Action:
+                  - sns:Publish
+                  - sns:Unsubscribe
+                Resource:  !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectResourcePrefix}-topic-streaming-labeling"
+
+  SNSTopicStreamingLabeling:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectResourcePrefix}-topic-streaming-labeling"
+      DisplayName: GroundTruth Streaming Labeling Notification Topic
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${ProjectResourcePrefix}-streaminglabeling-input"
+        - Key: "Project"
+          Value:  !Sub "${ProjectFriendlyName}"
+        - Key: "Purpose"
+          Value: "GroundTruth Streaming Labeling Notification Topic"
+
+  BucketToSNSPermission:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref SNSTopicStreamingLabeling
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Sid: S3PublishToSns
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref SNSTopicStreamingLabeling
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub "arn:aws:s3:*:*:${ProjectResourcePrefix}-streaminglabeling-input"
+          - Effect: Allow
+            Sid: StreamingTopicSubscribeSageMaker
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sns:Subscribe
+            Resource: !Ref SNSTopicStreamingLabeling
+          - Effect: Allow
+            Sid: StreamingTopicSubscribeRole
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectResourcePrefix}-sagemaker-execution-role"
+            Action: sns:Subscribe
+            Resource: !Ref SNSTopicStreamingLabeling
+
+  S3StreamingLabelingInputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectResourcePrefix}-streaminglabeling-input"
+      AccessControl: Private
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Topic: !Ref SNSTopicStreamingLabeling
+          - Event: 's3:ObjectRemoved:*'
+            Topic: !Ref SNSTopicStreamingLabeling
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - ''
+            AllowedMethods:
+              - GET
+            AllowedOrigins:
+              - '*'
+            ExposedHeaders:
+              - Access-Control-Allow-Origin
+            Id: groundTruthCorsRule1
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${ProjectResourcePrefix}-streaminglabeling-input"
+        - Key: "Project"
+          Value:  !Sub "${ProjectFriendlyName}"
+        - Key: "Purpose"
+          Value: "GroundTruth Streaming Labeling Input Job Bucket"
+    DependsOn:
+      - BucketToSNSPermission
+
+  S3StreamingLabelingOutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectResourcePrefix}-streaminglabeling-output"
+      AccessControl: Private
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - ''
+            AllowedMethods:
+              - GET
+            AllowedOrigins:
+              - '*'
+            ExposedHeaders:
+              - Access-Control-Allow-Origin
+            Id: groundTruthCorsRule1
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${ProjectResourcePrefix}-streaminglabeling-output"
+        - Key: "Project"
+          Value:  !Sub "${ProjectFriendlyName}"
+        - Key: "Purpose"
+          Value: "GroundTruth Streaming Labeling Output Job Bucket"
+
+  S3DropBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectResourcePrefix}-drop"
+      AccessControl: Private
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${ProjectResourcePrefix}-drop"
+        - Key: "Project"
+          Value:  !Sub "${ProjectFriendlyName}"
+        - Key: "Purpose"
+          Value: "Image drop bucket for project"
+      VersioningConfiguration:
+        Status: Enabled
+
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: ExecuteSageMakerPipeline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:StartPipelineExecution
+                  - sagemaker:ListPipelines
+                  - sagemaker:ListLabelingJobs
+                Resource: "*"
+        - PolicyName: Logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: "*"
+
+  LambdaSageMakerPipelineTrigger:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: index.handler
+      Runtime: python3.9
+      CodeUri: ../../lambda/src/python/trigger_sagemaker_pipeline
+      Description: Triggers a SageMaker Pipeline
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      FunctionName: !Sub "${ProjectResourcePrefix}-run-groundtruth-pipeline"
+      Environment:
+        Variables:
+          PROJECT_PREFIX: !Ref ProjectResourcePrefix
+      Tags:
+        Project:
+            !Sub "${ProjectFriendlyName}"
+        Purpose: "MLOps Automation"
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:aws:s3:::${ProjectResourcePrefix}-drop/*"
+      Events:
+        NotificationEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref S3DropBucket
+            Events: s3:ObjectCreated:*
+
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref "LambdaSageMakerPipelineTrigger"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        !GetAtt "GroundTruthJobExpiryReStartRule.Arn"
+
+  GroundTruthJobExpiryReStartRule:
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: A rule to restart any GroundTruth job due to job expiry (jobs currently expire every 30 days)
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type: 
+          - "SageMaker Ground Truth Labeling Job State Change"
+        detail:
+          LabelingJobStatus: 
+            - "Stopped"
+            - "Failed"
+            - "Completed"
+      Name: !Sub "${ProjectResourcePrefix}-gtruth-job-expired-event-rule"
+      State: ENABLED
+      Targets: 
+        - 
+          Arn: 
+            !GetAtt "LambdaSageMakerPipelineTrigger.Arn"
+          Id: "TargetLambdaSageMakerPipelineFunction"
+
+Outputs:
+  SNSTopicStreamingLabelingArn:
+    Value: !Ref SNSTopicStreamingLabeling
+    Description: Name of GroundTruth Streaming Labeling SNS Topic
+    Export:
+      Name: !Sub "${ProjectResourcePrefix}-topic-streaming-labeling-arn"
+  
+  StreamingLabelingInputBucket:
+    Value: !Ref S3StreamingLabelingInputBucket
+    Description: Name of GroundTruth Streaming Labeling Input Bucket
+    Export:
+      Name: !Sub "${ProjectResourcePrefix}-streaminglabeling-input"
+
+  StreamingLabelingOutputBucket:
+    Value: !Ref S3StreamingLabelingOutputBucket
+    Description: Name of GroundTruth Streaming Labeling Output Bucket
+    Export:
+      Name: !Sub "${ProjectResourcePrefix}-streaminglabeling-output"
+
+  DropBucket:
+    Value: !Ref S3DropBucket
+    Description: Name of Image Drop Bucket
+    Export:
+      Name: !Sub "${ProjectResourcePrefix}-drop"
+
+  GroundTruthExecutionRoleArn:
+    Value: !GetAtt  GroundTruthExecutionRole.Arn
+    Description: Arn of the GroundTruth Execution Role for Streaming Labeling
+    Export:
+      Name: !Sub "${ProjectResourcePrefix}-sagemaker-execution-role"

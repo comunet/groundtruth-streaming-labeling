@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CICD Stack (1) CodePipeline Deployment Stack"
+
+Parameters:
+  ProjectFriendlyName:
+    Type: String
+    Description: Enter an friendly project name for Tagging
+
+  ProjectResourcePrefix:
+    Type: String
+    Description: Enter a unique prefix for the project resources.
+
+  BranchName:
+    Type: String
+    Default: dev
+
+  CodeBuildImage:
+    Type: String
+    Description: The docker repo path to build image
+    Default: aws/codebuild/standard:5.0
+
+  CFTemplateName:
+    Type: String
+    Description: The name of the CloudFormation Template output from the package command
+
+Resources:
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - '*'
+                Effect: Allow
+                Resource: '*'
+
+  CodePipeLineRole:
+    Type: "AWS::IAM::Role"
+    DependsOn: CodeBuildRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+      -
+        PolicyName: "code-pipeline-access"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: "Allow"
+              Action: 
+                - "*"
+              Resource: "*"
+
+  CodePipelineCloudFormationDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 
+        !Sub "${ProjectResourcePrefix}-app-cp-cf-role"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  CFDeployerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CFDeployerPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - "*"
+            Resource: "*"
+      Roles:
+        -
+          !Ref CodePipelineCloudFormationDeployRole
+
+  CloudFormationCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectResourcePrefix}-services'
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: ./cf/cicd/buildspec.yaml
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildImage
+        EnvironmentVariables:
+          - Name: CODEPIPELINE_BUCKET
+            Value:
+              Fn::ImportValue:
+                !Sub "${ProjectResourcePrefix}-buildartifacts-bucket"
+          - Name: GROUNDTRUTH_INSTRUCTIONS_BUCKET
+            Value:
+              Fn::ImportValue:
+                !Sub "${ProjectResourcePrefix}-groundtruth-instructions-bucket"
+          - Name: PROJECT_PREFIX
+            Value: 
+              !Sub "${ProjectResourcePrefix}"
+          - Name: PROJECT_NAME
+            Value:
+              !Sub "${ProjectFriendlyName}"
+      TimeoutInMinutes: 15
+
+  AppPipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      Name: !Sub "${ProjectResourcePrefix}-app-pipeline"
+      RoleArn: !GetAtt CodePipeLineRole.Arn
+      Stages:
+        -
+          Name: "Get-SourceCode-from-CodeCommit"
+          Actions:
+            -
+              Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: SourceCode
+              Namespace: "SourceVariables"
+              Configuration:
+                PollForSourceChanges: true
+                BranchName: !Ref BranchName
+                RepositoryName: 
+                  Fn::ImportValue:
+                    !Sub "${ProjectResourcePrefix}-repo-name"
+              RunOrder: 1
+        -
+          Name: Build
+          Actions:
+            -
+              Name: CodeBuild-ValidateBuildCF
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceCode
+              OutputArtifacts:
+                - Name: DeployableArtifact
+              Configuration:
+                ProjectName: !GetAtt CloudFormationCodeBuildProject.Arn
+              RunOrder: 1
+        -
+          Name: Infrastructure-Deploy
+          Actions:
+            -
+              Name: cfnCreateChangeSet
+              InputArtifacts:
+                -
+                  Name: DeployableArtifact
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !GetAtt CodePipelineCloudFormationDeployRole.Arn
+                Capabilities: "CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND"
+                ChangeSetName: !Sub '${ProjectResourcePrefix}-app-cs'
+                StackName: !Sub '${ProjectResourcePrefix}-app'
+                TemplatePath: !Sub 'DeployableArtifact::${CFTemplateName}'
+                TemplateConfiguration: !Sub 'DeployableArtifact::params.json'
+              RunOrder: 2
+            -
+              Name: cfnExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !GetAtt CodePipelineCloudFormationDeployRole.Arn
+                ChangeSetName: !Sub '${ProjectResourcePrefix}-app-cs'
+                StackName: !Sub '${ProjectResourcePrefix}-app'
+              RunOrder: 3
+      ArtifactStore:
+        Type: S3
+        Location:
+          Fn::ImportValue:
+            !Sub "${ProjectResourcePrefix}-buildartifacts-bucket"
+      Tags:
+        - Key: Project
+          Value: !Sub "${ProjectFriendlyName}"
+        - Key: "Purpose"
+          Value: "Orchestration"

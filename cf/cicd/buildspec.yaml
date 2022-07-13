@@ -1,0 +1,81 @@
+version: 0.2
+#Paths are relative to project root
+phases:
+  install:
+    runtime-versions:
+      nodejs: 14
+    commands: 
+      - set -e
+      - orignpmversion=$(npm -v)
+      - echo "original npm version:" $orignpmversion
+      - npm i npm@latest -g
+      - currentnpmversion=$(npm -v)
+      - echo "current npm version:" $currentnpmversion
+      - sam --version
+      - sudo apt update
+      - sudo apt install zip unzip
+      - sudo apt install -y jq
+  pre_build:
+    commands:
+      - cd $CODEBUILD_SRC_DIR/
+      # Validating CFN Templates
+      - echo "Validating CFN templates"
+      - |
+        for cfn_template in $(find ./cf/project -type d \( -name _template \) -prune -false -o -name '*.yaml' -o -name '*.yml'); do
+          echo "Validating CloudFormation template file $cfn_template"
+          aws cloudformation validate-template --template-body file://$cfn_template
+        done
+  build:
+    commands:
+      # Create unique Build Guid
+      - buildGuid=$(date +"%Y%m%d%H%M%S")
+      # Package any Python Lambdas and Upload to S3
+      - |
+        for py_function in ./lambda/src/python/*/ ; do
+          echo "path is $py_function"
+          functionName=$(basename "$py_function")
+          echo "function name is >${functionName}<"
+          pip3 install -r ${py_function}requirements.txt --target $py_function
+          (cd $py_function && zip -r ../../../../$functionName.zip .)
+          aws s3 cp "$functionName.zip" "s3://$CODEPIPELINE_BUCKET/$buildGuid/$functionName.zip"
+        done
+      # Upload SageMaker Pipelines Python Code
+      - |
+        for py_code in ./smpipelines/src/python/* ; do
+          echo "code file is $py_code"
+          codeFileName=$(basename "$py_code")
+          echo "code filename is $codeFileName"
+          aws s3 cp "${py_code}" "s3://$CODEPIPELINE_BUCKET/$buildGuid/smp_code/${codeFileName}"
+          aws s3 cp "${py_code}" "s3://$CODEPIPELINE_BUCKET/latest/smp_code/${codeFileName}"
+        done
+      # Upload GroundTruth Instructions Images
+      - |
+        for _files in ./public/instruction-images/* ; do
+          echo "file is $_files"
+          fileName=$(basename "$_files")
+          echo "filename is $fileName"
+          aws s3 cp "${_files}" "s3://$GROUNDTRUTH_INSTRUCTIONS_BUCKET/images/${fileName}"
+        done
+      # Upload GroundTruth Instruction Template
+      - aws s3 cp "./public/instruction-template.template" "s3://$GROUNDTRUTH_INSTRUCTIONS_BUCKET/instruction-template.template"
+      # Compile Project CloudFormation Stacks, Package Lambdas to S3 with SAM
+      - |
+        for cf_template in $(find ./cf/project -type d \( -name _template \) -prune -false -o -name '*.yaml' -o -name '*.yml'); do
+          templateName="$(echo $cf_template | rev | cut -d'/' -f 1 | rev)"
+          templateOutputName="$(echo $templateName | cut -d '.' -f 1 | awk '{print $1"_output.yaml"}')"
+          echo "$templateName"
+          echo "$templateOutputName"
+          sam package --template-file $cf_template --output-template-file $templateOutputName --s3-bucket $CODEPIPELINE_BUCKET
+          aws s3 cp "$templateOutputName" "s3://$CODEPIPELINE_BUCKET/$buildGuid/$templateOutputName"
+        done
+      # Make a Dynamic Params File
+      - |
+        jq -n \
+        --arg proj_friendly_name "$PROJECT_NAME" \
+        --arg proj_resource_prefix "$PROJECT_PREFIX" \
+        '{ "Parameters": {"ProjectFriendlyName": $proj_friendly_name, "ProjectResourcePrefix": $proj_resource_prefix}}' \
+         > params.json
+artifacts:
+  files:
+    - ./*_output.yaml
+    - ./params.json

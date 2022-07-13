@@ -1,0 +1,31 @@
+<script src="https://assets.crowd.aws/crowd-html-elements.js"></script>
+<crowd-form>
+  <crowd-semantic-segmentation
+    name="crowd-semantic-segmentation"
+    src="{{{{ task.input.taskObject | grant_read_access }}}}"
+    header="{title_bar}"
+    labels="{categories_str}"
+  >
+    <full-instructions header="Segmentation Instructions">
+      <ol>
+          <li><strong>Read</strong> the task carefully and inspect the image.</li>
+          <li><strong>Read</strong> the options and review the examples provided to understand more about the labels.</li>
+          <li>If there is no clear 'prominent' examples of any of the label categories in the picture select 'Nothing to Label' [bottom right] and [Submit]</li>
+      </ol>
+    </full-instructions>
+    <short-instructions>
+      <p>Dear Annotator, we are trying to detect the areas within images of various different object types</p>
+      Please use the 'brush' [b] and zoom keys to highlight areas in the pictures indicating where labels exist</p>
+      <p><img src="{}" style="max-width:100%">
+      <br>Example "Musical Instrument". </p>
+      <p><img src="{}" style="max-width:100%">
+      <br>Example "Fruit".</p>
+      <p><img src="{}" style="max-width:100%">
+      <br>Example "Cheetah". </p>
+      <p><img src="{}" style="max-width:100%">
+      <br>Example "Tiger". </p>
+      <p><img src="{}" style="max-width:100%">
+      <br>Example "Snowman". </p>
+    </short-instructions>
+  </crowd-semantic-segmentation>
+</crowd-form>

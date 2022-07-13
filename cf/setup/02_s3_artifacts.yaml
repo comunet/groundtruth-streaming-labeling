@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Setup Stack (2) Sets up artifacts and groundtruth instructions bucket."
+
+Parameters:
+  ProjectFriendlyName:
+    Type: String
+    Description: Enter an friendly project name for Tagging
+
+  ProjectResourcePrefix:
+    Type: String
+    Description: Enter a unique prefix for the project resources.
+
+Resources:
+
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectResourcePrefix}-buildartifacts"
+      AccessControl: Private
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${ProjectResourcePrefix}-buildartifacts"
+        - Key: "Project"
+          Value:
+            !Sub "${ProjectFriendlyName}"
+        - Key: "Purpose"
+          Value: "Pipeline Artifacts"
+
+  S3GroundTruthPublicWebsite:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectResourcePrefix}-labelinginstructions-publicwebsite"
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${ProjectResourcePrefix}-projectdata"
+        - Key: "Project"
+          Value:  !Sub "${ProjectFriendlyName}"
+        - Key: "Purpose"
+          Value: "Store helper data for Project"
+
+  BucketPolicyS3GroundTruthPublicWebsite:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      PolicyDocument:
+        Id: MyPolicy
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Join 
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref S3GroundTruthPublicWebsite
+                - /*
+      Bucket: !Ref S3GroundTruthPublicWebsite
+
+Outputs:
+  ProjectResourcePrefix:
+    Description: "The unique prefix given to project/application"
+    Value: !Ref ProjectResourcePrefix
+  
+  ProjectFriendlyName:
+    Description: "The user-friendly name given to project/application"
+    Value: !Ref ProjectFriendlyName
+
+  ArtifactsBucket:
+    Description: Private Build Artifacts Bucket
+    Value: !Ref PipelineArtifactBucket
+    Export:
+      Name: !Sub ${ProjectResourcePrefix}-buildartifacts-bucket
+
+  GroundTruthPublicWebsiteBucket:
+    Description: Public GroundTruth Instructions Bucket
+    Value: !Ref S3GroundTruthPublicWebsite
+    Export:
+      Name: !Sub ${ProjectResourcePrefix}-groundtruth-instructions-bucket
+
+  GroundTruthPublicWebsiteURL:
+    Value: !Join 
+      - ''
+      - - 'https://'
+        - !GetAtt 
+          - S3GroundTruthPublicWebsite
+          - DomainName
+    Description: Url of S3 bucket to hold website content for the Labeling Instructions for GroundTruth
+    Export:
+      Name: !Sub "${ProjectResourcePrefix}-labelinginstructions-publicwebsite"
